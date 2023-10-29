@@ -9,9 +9,9 @@
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_ADDRESS);
 
 /////////////// INPUT SETTINGS ///////////////
-const char *ssid = "WIFI SSID";                                                               // wifi name
-const char *password = "WIFI PASSWORD";                                                       // wifi password
-String nightscoutUrlJson = "http://nightscoutdomain.com/api/v1/entries.json?count=1";         // url + /api/v1/entries.json?count=1
+const char *ssid = "";                                                               // wifi name
+const char *password = "";                                                       // wifi password
+String nightscoutUrlJson = "";         // url + /api/v1/entries.json?count=1
 String dataType = "mmol";                                                                     // mmol or mgdl
 int hourOffset = 0;                                                                           // timezone hour offset
 /////////////// INPUT SETTINGS ///////////////
@@ -25,27 +25,27 @@ int hourOffset = 0;                                                             
 const char *ntpServer = "pool.ntp.org";
 
 const long gmtOffset = (hourOffset * 3600);
-const int daylightOffset = 0; // Oslo does observe daylight saving time
+const int daylightOffset = 0; 
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, ntpServer, gmtOffset);
-TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120}; // Central European Summer Time
-TimeChangeRule CET = {"CET ", Last, Sun, Oct, 3, 60};  // Central European Time
+TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120}; 
+TimeChangeRule CET = {"CET ", Last, Sun, Oct, 3, 60};  
 Timezone OsloTime(CEST, CET);
 long timeMills, timeStampMills;
-//String timeStamp1, timeStamp2, id1, id2, svg1, svg2, oldTime, trendArrow, timeAgo, trendMmolString, trendMgdlString;
-//String oldid1, newTime = "a";
 String mills, delta, direction, utcOffset, sgv, newTime, oldTime;
-
+float maxVal = 0;
+float minVal = 100;
+int timeSpan;
 
 bool failed = false;
 void setup() {
   Serial.begin(9600);
   Wire.begin(SDA_PIN, SCL_PIN);
   display.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS);
-  display.setTextSize(1); // Set the text size
-  display.setTextColor(SSD1306_WHITE); // Set the text color (white)
+  display.setTextSize(1); 
+  display.setTextColor(SSD1306_WHITE); 
   display.clearDisplay();
-  display.display(); // Show the text on the display
+  display.display(); 
   WiFi.begin(ssid, password);
   timeClient.begin();
   timeClient.setTimeOffset(gmtOffset);
@@ -76,9 +76,22 @@ void setup() {
 void loop() {
   fetchJsonBg();
   timeLoop();
-  printData();
+  serializeArray();
+  displayData();
   delay(1000);
 }
+
+struct DataPoint {
+  String mills;
+  String delta;
+  String direction;
+  String utcOffset;
+  String sgv;
+  String timeStamp;
+};
+
+const int arraySize = 10;
+DataPoint data[arraySize];
 
 void fetchJsonBg() {
   HTTPClient http;
@@ -88,26 +101,29 @@ void fetchJsonBg() {
   if (httpCode > 0) {
     if (httpCode == HTTP_CODE_OK) {
       String jsonStr = http.getString();
-      DynamicJsonDocument jsonDoc(1024);
+      DynamicJsonDocument jsonDoc(4096);
       DeserializationError error = deserializeJson(jsonDoc, jsonStr);
       if (!error) {
-        //serializeJsonPretty(jsonDoc, Serial);
         if (jsonDoc.is<JsonArray>()) {
           JsonArray jsonArray = jsonDoc.as<JsonArray>();
-          for (JsonObject obj : jsonArray) {
-            mills = obj["mills"].as<String>();
-            delta = obj["delta"].as<String>();
-            direction = obj["direction"].as<String>();
-            utcOffset = obj["utcOffset"].as<String>();
-            sgv = obj["sgv"].as<String>();
-            mills.remove(10);
-          }
-        }
 
+          int arraySize = jsonArray.size();
+
+          
+          for (int i = 0; i < 1; i++) {
+            data[i].mills = jsonArray[i]["mills"].as<String>();
+            data[i].delta = jsonArray[i]["delta"].as<String>();
+            data[i].direction = jsonArray[i]["direction"].as<String>();
+            data[i].utcOffset = jsonArray[i]["utcOffset"].as<String>();
+            data[i].sgv = jsonArray[i]["sgv"].as<String>();
+          }
+        } else {
+          Serial.println("JSON is not an array");
+        }
       } else {
-        // Error parsing JSON
+        
         Serial.print("Error parsing JSON: ");
-        //Serial.println(error.c_str());
+        Serial.println(error.c_str());
       }
     }
   } else {
@@ -117,50 +133,47 @@ void fetchJsonBg() {
   http.end();
 }
 
-void printData() {
-  String deltaMgdlString, deltaMmolString;
-  float deltaMgdlFloat = atof(delta.c_str());
-  float deltaMmolFloat = deltaMgdlFloat * 0.0555;
-  float sgvMgdl = atof(sgv.c_str());
-  float sgvMmol = sgvMgdl * 0.0555;
-  if (deltaMgdlFloat < 0) {
-    deltaMgdlString = "-" + String(deltaMgdlFloat, 0);
-  } else {
-    deltaMgdlString = String(deltaMgdlFloat, 0);
+void serializeArray() {
+  maxVal = 0;
+  minVal = 100;
+  for (int i = 0; i < arraySize; i++) {
+    int sgvInt = atoi(data[i].sgv.c_str());
+    int deltaInt = atoi(data[i].delta.c_str());
+    float sgvFloat = sgvInt * 0.0555;
+    float deltaFloat = deltaInt * 0.0555;
+    if (sgvFloat > maxVal) {
+      maxVal = sgvFloat;
+    }
+    if (sgvFloat < minVal) {
+      minVal = sgvFloat;
+    }
+    data[i].sgv = sgvFloat, 2;
+    data[i].delta = deltaFloat, 1;
+    data[i].mills.remove(10);
+    String str = data[i].mills; 
+    const char* charPtr = str.c_str(); 
+    char* endptr; 
+    long correctedTime = strtol(charPtr, &endptr, 10); 
+    long dataMills = correctedTime;
+    dataMills = timeMills - dataMills - 3600;
+    data[i].mills = dataMills;
+    unsigned long minutes = dataMills / 60;
+    unsigned long seconds = dataMills % 60;
+    String timeStampObject = String(minutes) + "m" + String(seconds) + "s";
+    data[i].timeStamp = timeStampObject;
   }
-  if (sgvMmol < 0) {
-    deltaMmolString = "-" + String(deltaMmolFloat);
-  } else {
-    deltaMmolString = String(deltaMmolFloat);
-  }
-  String timestring = "2m";
-  timeMills = timeMills - 3600 * 2;
-  timeStampMills = strtol(mills.c_str(), nullptr, 10);
-
-  int millsAgo = (timeMills - timeStampMills);
-  int minutes = millsAgo / 60; // Calculate minutes
-  millsAgo = millsAgo % 60;    // Calculate remaining seconds
-
-  String formattedTime = String(minutes) + "m" + String(millsAgo) + "s";
-
-
-
-  if (dataType == "mmol") {
-    printBg(String(sgvMmol, 2));
-    printDelta(formattedTime, deltaMmolString);
-  } else {
-    printBg(String(sgvMgdl, 0));
-    printDelta(formattedTime, deltaMgdlString);
-  }
-
-  if (newTime != oldTime) {
-    printTime(newTime);
-    oldTime = newTime;
-  }
-
+  String str1 = data[0].mills;
+  String str2 = data[9].mills;
+  long time1 = strtol(str1.c_str(), NULL, 10);
+  long time2 = strtol(str2.c_str(), NULL, 10);
+  timeSpan = time2 - time1;
 }
 
-
+void displayData() {
+  printBg(data[0].sgv);
+  printDelta(data[0].timeStamp, data[0].delta);
+  printTime(newTime);
+}
 
 void printFailed() {
 
@@ -175,7 +188,6 @@ void timeLoop() {
   char formattedTime[9];
   snprintf(formattedTime, sizeof(formattedTime), "%02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
   newTime = formattedTime;
-
 }
 void clearD() {
   display.clearDisplay();
@@ -214,7 +226,6 @@ void printDelta(String timeAgo, String delta) {
   display.setCursor(0, 16);
   display.setTextSize(2);
   display.print(timeAgo);
-
   if (delta.length() == 1) {
     display.setCursor(116, 16);
   } else if (delta.length() == 2) {
